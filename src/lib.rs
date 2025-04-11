@@ -1,107 +1,95 @@
 use pyo3::prelude::*;
-use std::sync::Arc;
-use std::borrow::Cow;
-
-// Import skim components
+use pyo3::types::{PyList};
 use skim::prelude::*;
 
-/// A simple string item for skim
-struct SimpleItem {
+// Custom SkimItem implementation for holding a string
+struct TextItem {
     text: String,
 }
 
-impl SkimItem for SimpleItem {
+impl TextItem {
+    fn new(text: &str) -> Self {
+        TextItem {
+            text: text.to_string(),
+        }
+    }
+}
+
+impl SkimItem for TextItem {
     fn text(&self) -> Cow<str> {
         Cow::Borrowed(&self.text)
     }
 
-    fn preview(&self, _context: PreviewContext) -> ItemPreview {
+    fn preview(&self, _: PreviewContext) -> ItemPreview {
         ItemPreview::Text(self.text.to_string())
     }
-}
 
-/// Simple fuzzy matching implementation
-fn simple_fuzzy_match(text: &str, pattern: &str) -> Option<i64> {
-    // Basic implementation of fuzzy matching
-    // If pattern is empty, it matches with score 0
-    if pattern.is_empty() {
-        return Some(0);
-    }
-
-    let mut pattern_chars = pattern.chars().peekable();
-    let mut score: i64 = 0;
-    let mut last_matched_pos: Option<usize> = None;
-
-    // Check if all pattern characters appear in order in the text
-    for (i, ch) in text.chars().enumerate() {
-        if let Some(&pattern_ch) = pattern_chars.peek() {
-            if ch.to_lowercase().next() == pattern_ch.to_lowercase().next() {
-                pattern_chars.next();
-
-                // Compute score: adjacent matches get higher scores
-                let position_bonus = if let Some(last_pos) = last_matched_pos {
-                    if i == last_pos + 1 {
-                        10 // Adjacent match bonus
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-
-                score += 1 + position_bonus;
-                last_matched_pos = Some(i);
-
-                // If we've matched all pattern chars, we're done
-                if pattern_chars.peek().is_none() {
-                    return Some(score);
-                }
-            }
-        }
-    }
-
-    // If we get here with no more pattern chars, it's a match
-    if pattern_chars.peek().is_none() {
-        Some(score)
-    } else {
-        None
+    // Add any other necessary implementations from the SkimItem trait
+    fn display(&self, _: DisplayContext) -> AnsiString {
+        // Convert &String to &str first
+        let text_str: &str = self.text.as_str();
+        AnsiString::from(text_str)
     }
 }
 
-/// A basic function to perform fuzzy matching with skim
+/// Perform a fuzzy search on a list of strings
+///
+/// Args:
+///     query: The search query
+///     items: A list of strings to search
+///
+/// Returns:
+///     A list of tuples containing (matched item, score)
 #[pyfunction]
-fn fuzzy_match(query: &str, choices: Vec<String>) -> PyResult<Vec<(usize, String, i64)>> {
-    // Create items from the choices
-    let items: Vec<SimpleItem> = choices
-        .iter()
-        .map(|choice| {
-            SimpleItem {
-                text: choice.to_string(),
-            }
-        })
-        .collect();
+fn fuzzy_match(py: Python, query: &str, items: Vec<String>) -> PyResult<PyObject> {
+    let results = PyList::empty(py);
 
-    // Perform matching
-    let mut results = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        // Use our own fuzzy matching function
-        if let Some(score) = simple_fuzzy_match(&item.text, query) {
-            // Skip very low scores
-            if score > 0 {
-                results.push((index, item.text.to_string(), score));
-            }
-        }
+    // Skip processing if the query is empty or there are no items
+    if query.is_empty() || items.is_empty() {
+        return Ok(results.into());
     }
 
-    // Sort by score (highest first)
-    results.sort_by(|a, b| b.2.cmp(&a.2));
+    // Create a skim source from the items
+    let options = SkimOptionsBuilder::default()
+        .height("100%".to_string())
+        .multi(true)
+        .build()
+        .unwrap();
 
-    Ok(results)
+    // Create a string of content for skim
+    let content = items.join("\n");
+
+    // Use the default item reader
+    let item_reader = SkimItemReader::default();
+    let items_source = item_reader.of_bufread(std::io::Cursor::new(content));
+
+    // Run the search
+    let result = Skim::run_with(&options, Some(items_source))
+        .map(|out| out.selected_items)
+        .unwrap_or_default();
+
+    // Process the results
+    let mut scored_items = Vec::new();
+    for item in &result {
+        // Get the line as String
+        let item_text = item.text().to_string();
+        // Add to our results
+        scored_items.push(item_text);
+    }
+
+    // Convert to Python list of tuples (item, score)
+    let py_results = PyList::new(
+        py,
+        scored_items
+            .iter()
+            .collect::<Vec<_>>(),
+    );
+
+    Ok(py_results.into())
 }
 
-/// A Python module implemented in Rust.
 #[pymodule]
-fn skym(py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(fuzzy_match, py)?)?;
+fn skym(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(fuzzy_match, m)?)?;
     Ok(())
 }
