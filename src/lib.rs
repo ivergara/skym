@@ -31,7 +31,6 @@ fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
         return Ok(PyList::empty(py).into());
     }
 
-    // Create skim options for fuzzy search - even with empty query, we enter interactive mode
     let options = SkimOptionsBuilder::default()
         .height("100%".to_string())
         .query(Some(query.to_string()))

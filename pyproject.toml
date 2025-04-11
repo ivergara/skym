@@ -1,10 +1,10 @@
 [project]
 name = "skym"
 version = "0.1.0"
-description = "Add your description here"
+description = "Python package exposing Skim functionality for fuzzy match over an iterable of strings."
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = []
+authors = [{name = "Ignacio Vergara Kausel", email="ivergarakausel@gmail.com"}]
 
 classifiers = [
     "Programming Language :: Rust",
@@ -15,6 +15,7 @@ classifiers = [
 [dependency-groups]
 dev = [
     "maturin>=1.8.3",
+    "pytest>=8.3.5",
 ]
 
 [build-system]
@@ -22,7 +23,6 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-# "extension-module" tells pyo3 we want to build an extension module (skips linking against libpython.so)
 features = ["pyo3/extension-module"]
-module-name = "skym.skym"
-python-source = "python"
+module-name = "skym"
+python-source = "skym"
