@@ -2,88 +2,61 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList};
 use skim::prelude::*;
 
-// Custom SkimItem implementation for holding a string
-struct TextItem {
-    text: String,
-}
-
-impl TextItem {
-    fn new(text: &str) -> Self {
-        TextItem {
-            text: text.to_string(),
-        }
-    }
-}
-
-impl SkimItem for TextItem {
-    fn text(&self) -> Cow<str> {
-        Cow::Borrowed(&self.text)
-    }
-
-    fn preview(&self, _: PreviewContext) -> ItemPreview {
-        ItemPreview::Text(self.text.to_string())
-    }
-
-    // Add any other necessary implementations from the SkimItem trait
-    fn display(&self, _: DisplayContext) -> AnsiString {
-        // Convert &String to &str first
-        let text_str: &str = self.text.as_str();
-        AnsiString::from(text_str)
-    }
-}
-
-/// Perform a fuzzy search on a list of strings
+/// Perform a fuzzy search on an iterable of strings
 ///
 /// Args:
 ///     query: The search query
-///     items: A list of strings to search
+///     items: An iterable of strings to search
 ///
 /// Returns:
-///     A list of tuples containing (matched item, score)
+///     A list of matched items
 #[pyfunction]
-fn fuzzy_match(py: Python, query: &str, items: Vec<String>) -> PyResult<PyObject> {
-    let results = PyList::empty(py);
+fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
+    // For empty query, we'll collect all items and return them without filtering
 
-    // Skip processing if the query is empty or there are no items
-    if query.is_empty() || items.is_empty() {
-        return Ok(results.into());
+    // Convert items to an iterator
+    let items = items.as_ref(py);
+    let iter = items.iter()?;
+
+    // Collect the strings from the iterator
+    let mut item_strs = Vec::new();
+    for item_result in iter {
+        let item = item_result?;
+        let item_str = item.extract::<String>()?;
+        item_strs.push(item_str);
     }
 
-    // Create a skim source from the items
+    // Return empty list if no items
+    if item_strs.is_empty() {
+        return Ok(PyList::empty(py).into());
+    }
+
+    // Create skim options for fuzzy search - even with empty query, we enter interactive mode
     let options = SkimOptionsBuilder::default()
         .height("100%".to_string())
+        .query(Some(query.to_string()))
         .multi(true)
         .build()
         .unwrap();
 
-    // Create a string of content for skim
-    let content = items.join("\n");
+    // Create a content string for skim
+    let content = item_strs.join("\n");
 
-    // Use the default item reader
+    // Create source from our string content
     let item_reader = SkimItemReader::default();
-    let items_source = item_reader.of_bufread(std::io::Cursor::new(content));
+    let source = item_reader.of_bufread(std::io::Cursor::new(content));
 
-    // Run the search
-    let result = Skim::run_with(&options, Some(items_source))
+    // Run the fuzzy search
+    let results = Skim::run_with(&options, Some(source))
         .map(|out| out.selected_items)
         .unwrap_or_default();
 
-    // Process the results
-    let mut scored_items = Vec::new();
-    for item in &result {
-        // Get the line as String
+    // Convert fuzzy search results to Python list
+    let py_results = PyList::empty(py);
+    for item in results {
         let item_text = item.text().to_string();
-        // Add to our results
-        scored_items.push(item_text);
+        py_results.append(item_text.into_py(py))?;
     }
-
-    // Convert to Python list of tuples (item, score)
-    let py_results = PyList::new(
-        py,
-        scored_items
-            .iter()
-            .collect::<Vec<_>>(),
-    );
 
     Ok(py_results.into())
 }
