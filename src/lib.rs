@@ -2,6 +2,49 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList};
 use skim::prelude::*;
 
+/// Perform the actual fuzzy matching logic
+///
+/// This function separates the core matching logic from the Python binding,
+/// making it easier to test and maintain.
+///
+/// Args:
+///     query: The search query
+///     items: A vector of strings to search
+///
+/// Returns:
+///     A vector of matched strings
+pub fn perform_fuzzy_match(query: &str, items: Vec<String>) -> Vec<String> {
+    // Return empty vector if no items
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    // Configure the skim options
+    let options = SkimOptionsBuilder::default()
+        .height("100%".to_string())
+        .query(Some(query.to_string()))
+        .multi(true)
+        .build()
+        .unwrap();
+
+    // Create a content string for skim
+    let content = items.join("\n");
+
+    // Create source from our string content
+    let item_reader = SkimItemReader::default();
+    let source = item_reader.of_bufread(std::io::Cursor::new(content));
+
+    // Run the fuzzy search
+    let results = Skim::run_with(&options, Some(source))
+        .map(|out| out.selected_items)
+        .unwrap_or_default();
+
+    // Convert skim results to string vector
+    results.iter()
+        .map(|item| item.text().to_string())
+        .collect()
+}
+
 /// Perform a fuzzy search on an iterable of strings
 ///
 /// Args:
@@ -12,8 +55,6 @@ use skim::prelude::*;
 ///     A list of matched items
 #[pyfunction]
 fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
-    // For empty query, we'll collect all items and return them without filtering
-
     // Convert items to an iterator
     let items = items.as_ref(py);
     let iter = items.iter()?;
@@ -26,35 +67,13 @@ fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
         item_strs.push(item_str);
     }
 
-    // Return empty list if no items
-    if item_strs.is_empty() {
-        return Ok(PyList::empty(py).into());
-    }
+    // Use our helper function to perform the actual matching
+    let matched_items = perform_fuzzy_match(query, item_strs);
 
-    let options = SkimOptionsBuilder::default()
-        .height("100%".to_string())
-        .query(Some(query.to_string()))
-        .multi(true)
-        .build()
-        .unwrap();
-
-    // Create a content string for skim
-    let content = item_strs.join("\n");
-
-    // Create source from our string content
-    let item_reader = SkimItemReader::default();
-    let source = item_reader.of_bufread(std::io::Cursor::new(content));
-
-    // Run the fuzzy search
-    let results = Skim::run_with(&options, Some(source))
-        .map(|out| out.selected_items)
-        .unwrap_or_default();
-
-    // Convert fuzzy search results to Python list
+    // Convert results to Python list
     let py_results = PyList::empty(py);
-    for item in results {
-        let item_text = item.text().to_string();
-        py_results.append(item_text.into_py(py))?;
+    for item in matched_items {
+        py_results.append(item.into_py(py))?;
     }
 
     Ok(py_results.into())
