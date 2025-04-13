@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList};
 use skim::prelude::*;
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 /// Perform the actual fuzzy matching logic
 ///
@@ -10,20 +12,38 @@ use skim::prelude::*;
 /// Args:
 ///     query: The search query
 ///     items: A vector of strings to search
+///     interactive: Whether to run skim in interactive mode
 ///
 /// Returns:
 ///     A vector of matched strings
-pub fn perform_fuzzy_match(query: &str, items: Vec<String>) -> Vec<String> {
-    // Return empty vector if no items
+fn perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Vec<String> {
+    // Return early for empty input
     if items.is_empty() {
         return Vec::new();
     }
 
+    // Use a match expression for clearer intent
+    match interactive {
+        true => perform_interactive_match(query, items),
+        false => perform_non_interactive_match(query, items),
+    }
+}
+
+/// Perform interactive fuzzy matching using skim
+///
+/// Args:
+///     query: The search query
+///     items: A vector of strings to search
+///
+/// Returns:
+///     A vector of matched strings
+fn perform_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
     // Configure the skim options
     let options = SkimOptionsBuilder::default()
         .height("100%".to_string())
         .query(Some(query.to_string()))
         .multi(true)
+        .interactive(true)
         .build()
         .unwrap();
 
@@ -45,16 +65,48 @@ pub fn perform_fuzzy_match(query: &str, items: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Perform non-interactive fuzzy matching using fuzzy-matcher
+///
+/// Args:
+///     query: The search query
+///     items: A vector of strings to search
+///
+/// Returns:
+///     A vector of matched strings
+fn perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
+    // Create a SkimMatcherV2 (same algorithm used by skim)
+    let matcher = SkimMatcherV2::default();
+
+    // Score each item and collect results
+    let mut scored_items: Vec<(i64, String)> = items.iter()
+        .filter_map(|item| {
+            // Score the item, filter out non-matches
+            matcher.fuzzy_match(item, query)
+                .map(|score| (score, item.clone()))
+        })
+        .collect();
+
+    // Sort by score (descending)
+    scored_items.sort_by(|a, b| b.0.cmp(&a.0));
+
+    // Extract just the strings
+    scored_items.into_iter()
+        .map(|(_, item)| item)
+        .collect()
+}
+
 /// Perform a fuzzy search on an iterable of strings
 ///
 /// Args:
 ///     query: The search query
 ///     items: An iterable of strings to search
+///     interactive: Whether to run in interactive mode (default: False).
+///                  When True, shows a UI for selection. When False, returns matches non-interactively.
 ///
 /// Returns:
 ///     A list of matched items
 #[pyfunction]
-fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
+fn fuzzy_match(py: Python, query: &str, items: PyObject, interactive: Option<bool>) -> PyResult<PyObject> {
     // Convert items to an iterator
     let items = items.as_ref(py);
     let iter = items.iter()?;
@@ -68,7 +120,9 @@ fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
     }
 
     // Use our helper function to perform the actual matching
-    let matched_items = perform_fuzzy_match(query, item_strs);
+    // Default to non-interactive mode if not specified
+    let is_interactive = interactive.unwrap_or(false);
+    let matched_items = perform_fuzzy_match(query, item_strs, is_interactive);
 
     // Convert results to Python list
     let py_results = PyList::empty(py);
@@ -83,4 +137,24 @@ fn fuzzy_match(py: Python, query: &str, items: PyObject) -> PyResult<PyObject> {
 fn skym(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fuzzy_match, m)?)?;
     Ok(())
+}
+
+// ----------------------------------------------------------------------
+// BENCHMARK WRAPPER FUNCTIONS
+//
+// These functions are directly exported for benchmarking and testing.
+// ----------------------------------------------------------------------
+
+/// Wrapper function for benchmarking perform_fuzzy_match
+/// This function is exported for benchmarks but not intended for general use
+#[doc(hidden)]
+pub fn bench_perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Vec<String> {
+    perform_fuzzy_match(query, items, interactive)
+}
+
+/// Wrapper function for benchmarking perform_non_interactive_match
+/// This function is exported for benchmarks but not intended for general use
+#[doc(hidden)]
+pub fn bench_perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
+    perform_non_interactive_match(query, items)
 }

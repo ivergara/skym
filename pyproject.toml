@@ -16,6 +16,7 @@ classifiers = [
 dev = [
     "maturin>=1.8.3",
     "pytest>=8.3.5",
+    "pytest-benchmark>=4.0.0",
 ]
 
 [build-system]
@@ -24,5 +25,5 @@ build-backend = "maturin"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "skym"
-python-source = "skym"
+module-name = "skym.skym"
+python-source = "python"
