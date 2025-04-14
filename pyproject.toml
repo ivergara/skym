@@ -17,6 +17,7 @@ dev = [
     "maturin>=1.8.3",
     "pytest>=8.3.5",
     "pytest-benchmark>=4.0.0",
+    "zig>=1.0.dev0",
 ]
 
 [build-system]
