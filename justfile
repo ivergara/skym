@@ -10,14 +10,6 @@ default:
 bench:
     cargo bench
 
-# Run benchmarks and save results as a baseline
-bench-save BASELINE="original":
-    cargo bench -- --save-baseline {{BASELINE}}
-
-# Compare current benchmark results with a saved baseline
-bench-compare BASELINE="original":
-    cargo bench -- --baseline {{BASELINE}}
-
 # Open benchmark report in the default browser
 bench-report:
     #!/usr/bin/env bash

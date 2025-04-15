@@ -20,21 +20,6 @@ just bench
 just bench-report
 ```
 
-#### Comparing Implementations
-
-When making optimizations, you can compare performance between different implementations:
-
-```bash
-# Run benchmarks and save as a baseline named "original"
-just bench-save original
-
-# Make your code changes, then run and compare with the baseline
-just bench-compare original
-
-# Generate a comparison table between two sets of results
-just bench-table original new
-```
-
 ### Managing Benchmark Results
 
 ```bash

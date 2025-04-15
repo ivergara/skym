@@ -1,8 +1,10 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyList};
+use pyo3::types::{PyList, PySequence};
+use pyo3::exceptions::PyValueError;
 use skim::prelude::*;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+use std::sync::Arc;
 
 /// Perform the actual fuzzy matching logic
 ///
@@ -29,6 +31,21 @@ fn perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Ve
     }
 }
 
+struct StringItem {
+    text: String,
+    index: usize,
+}
+
+impl SkimItem for StringItem {
+    fn text(&self) -> Cow<str> {
+        Cow::Borrowed(&self.text)
+    }
+
+    fn output(&self) -> Cow<str> {
+        self.text()
+    }
+}
+
 /// Perform interactive fuzzy matching using skim
 ///
 /// Args:
@@ -45,22 +62,35 @@ fn perform_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
         .multi(true)
         .interactive(true)
         .build()
-        .unwrap();
+        .expect("Failed to build skim options");
 
-    // Create a content string for skim
-    let content = items.join("\n");
+    let skim_items: Vec<Arc<dyn SkimItem>> = items
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            Arc::new(StringItem {
+                text: text.clone(),
+                index: i,
+            }) as Arc<dyn SkimItem>
+        })
+        .collect();
 
-    // Create source from our string content
-    let item_reader = SkimItemReader::default();
-    let source = item_reader.of_bufread(std::io::Cursor::new(content));
+    // Create a Receiver for the items
+    let (tx, rx): (SkimItemSender, SkimItemReceiver) = bounded(skim_items.len());
 
-    // Run the fuzzy search
-    let results = Skim::run_with(&options, Some(source))
+    // Send all items to the channel
+    for item in skim_items {
+        tx.send(item).unwrap();
+    }
+    drop(tx); // Close the channel
+
+    // Run the fuzzy search with the receiver
+    let selected_items = Skim::run_with(&options, Some(rx))
         .map(|out| out.selected_items)
         .unwrap_or_default();
 
     // Convert skim results to string vector
-    results.iter()
+    selected_items.iter()
         .map(|item| item.text().to_string())
         .collect()
 }
@@ -77,14 +107,15 @@ fn perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String>
     // Create a SkimMatcherV2 (same algorithm used by skim)
     let matcher = SkimMatcherV2::default();
 
+    // Preallocate vector with capacity equal to items (worst case all match)
+    let mut scored_items: Vec<(i64, String)> = Vec::with_capacity(items.len());
+
     // Score each item and collect results
-    let mut scored_items: Vec<(i64, String)> = items.iter()
-        .filter_map(|item| {
-            // Score the item, filter out non-matches
-            matcher.fuzzy_match(item, query)
-                .map(|score| (score, item.clone()))
-        })
-        .collect();
+    for item in &items {
+        if let Some(score) = matcher.fuzzy_match(item, query) {
+            scored_items.push((score, item.clone()));
+        }
+    }
 
     // Sort by score (descending)
     scored_items.sort_by(|a, b| b.0.cmp(&a.0));
@@ -106,33 +137,46 @@ fn perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String>
 /// Returns:
 ///     A list of matched items
 #[pyfunction]
-fn fuzzy_match(py: Python, query: &str, items: PyObject, interactive: Option<bool>) -> PyResult<PyObject> {
+fn fuzzy_match(py: Python, query: &str, items: &PyAny, interactive: Option<bool>) -> PyResult<PyObject> {
     // Convert items to an iterator
-    let items = items.as_ref(py);
     let iter = items.iter()?;
 
-    // Collect the strings from the iterator
-    let mut item_strs = Vec::new();
+    // Get the length of the iterator if it's a sequence
+    let approx_len = if let Ok(seq) = items.downcast::<PySequence>() {
+        seq.len().unwrap_or(10).min(1000) // Cap at 1000 to avoid excessive allocation
+    } else {
+        10 // Default capacity if we can't determine length
+    };
+
+    // Collect with capacity hint
+    let mut item_strs = Vec::with_capacity(approx_len);
     for item_result in iter {
         let item = item_result?;
-        let item_str = item.extract::<String>()?;
-        item_strs.push(item_str);
+        let str_item = item.extract::<String>()
+            .map_err(|_| {
+                let type_name = item.get_type().name().unwrap_or("Unknown");
+                PyValueError::new_err(
+                    format!("Expected a string item, got object of type: {}", type_name)
+                )
+            })?;
+        item_strs.push(str_item);
     }
+    // .collect();
+    // let item_strs = item_strs?;
 
     // Use our helper function to perform the actual matching
     // Default to non-interactive mode if not specified
     let is_interactive = interactive.unwrap_or(false);
     let matched_items = perform_fuzzy_match(query, item_strs, is_interactive);
 
-    // Convert results to Python list
-    let py_results = PyList::empty(py);
-    for item in matched_items {
-        py_results.append(item.into_py(py))?;
-    }
+    // Create Python list directly from the matched string items
+    // This shouldn't fail since we have a Vec<String> that can be converted to Python strings
+    let py_results = PyList::new(py, matched_items);
 
     Ok(py_results.into())
 }
 
+/// A Python module implemented in Rust performing (non) interactive fuzzy matching of a string iver an iterable of strings.
 #[pymodule]
 fn skym(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fuzzy_match, m)?)?;
