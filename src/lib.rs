@@ -1,8 +1,11 @@
-use pyo3::prelude::*;
-use pyo3::types::{PyList};
-use skim::prelude::*;
-use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyList, PySequence, PyString};
+use skim::prelude::*;
+use std::borrow::Cow;
+use std::sync::Arc;
 
 /// Perform the actual fuzzy matching logic
 ///
@@ -11,21 +14,38 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 ///
 /// Args:
 ///     query: The search query
-///     items: A vector of strings to search
+///     items: A slice of strings to search
 ///     interactive: Whether to run skim in interactive mode
 ///
 /// Returns:
-///     A vector of matched strings
-fn perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Vec<String> {
-    // Return early for empty input
+///     A vector of matched strings or PyErr if something fails
+fn perform_fuzzy_match<'a>(
+    query: &str,
+    items: &'a [String],
+    interactive: bool,
+) -> PyResult<Vec<&'a String>> {
     if items.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    // Use a match expression for clearer intent
     match interactive {
         true => perform_interactive_match(query, items),
         false => perform_non_interactive_match(query, items),
+    }
+}
+
+struct StringItem {
+    text: String,
+    index: usize,
+}
+
+impl SkimItem for StringItem {
+    fn text(&self) -> Cow<str> {
+        Cow::Borrowed(&self.text)
+    }
+
+    fn output(&self) -> Cow<str> {
+        self.text()
     }
 }
 
@@ -33,66 +53,88 @@ fn perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Ve
 ///
 /// Args:
 ///     query: The search query
-///     items: A vector of strings to search
+///     items: A slice of strings to search
 ///
 /// Returns:
-///     A vector of matched strings
-fn perform_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
-    // Configure the skim options
+///     A vector of matched strings or PyErr if something fails
+fn perform_interactive_match<'a>(query: &str, items: &'a [String]) -> PyResult<Vec<&'a String>> {
     let options = SkimOptionsBuilder::default()
         .height("100%".to_string())
         .query(Some(query.to_string()))
         .multi(true)
         .interactive(true)
         .build()
-        .unwrap();
+        .map_err(|err| PyRuntimeError::new_err(format!("Failed to build skim options: {}", err)))?;
 
-    // Create a content string for skim
-    let content = items.join("\n");
+    let mut selected_indices = Vec::with_capacity(2);
 
-    // Create source from our string content
-    let item_reader = SkimItemReader::default();
-    let source = item_reader.of_bufread(std::io::Cursor::new(content));
+    let skim_items: Vec<Arc<dyn SkimItem>> = items
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            Arc::new(StringItem {
+                text: text.clone(),
+                index: i,
+            }) as Arc<dyn SkimItem>
+        })
+        .collect();
 
-    // Run the fuzzy search
-    let results = Skim::run_with(&options, Some(source))
-        .map(|out| out.selected_items)
-        .unwrap_or_default();
+    let (tx, rx): (SkimItemSender, SkimItemReceiver) = bounded(skim_items.len());
 
-    // Convert skim results to string vector
-    results.iter()
-        .map(|item| item.text().to_string())
-        .collect()
+    for item in skim_items {
+        if let Err(err) = tx.send(item) {
+            return Err(PyRuntimeError::new_err(format!(
+                "Failed to send item to skim channel: {}",
+                err
+            )));
+        }
+    }
+    drop(tx);
+
+    if let Some(out) = Skim::run_with(&options, Some(rx)) {
+        for item in out.selected_items {
+            if let Some(string_item) = item.as_any().downcast_ref::<StringItem>() {
+                selected_indices.push(string_item.index);
+            }
+        }
+    }
+
+    Ok(selected_indices
+        .iter()
+        .filter_map(|&idx| items.get(idx))
+        .collect())
 }
 
 /// Perform non-interactive fuzzy matching using fuzzy-matcher
 ///
 /// Args:
 ///     query: The search query
-///     items: A vector of strings to search
+///     items: A slice of strings to search
 ///
 /// Returns:
-///     A vector of matched strings
-fn perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
+///     A vector of matched strings or PyErr if something fails
+fn perform_non_interactive_match<'a>(
+    query: &str,
+    items: &'a [String],
+) -> PyResult<Vec<&'a String>> {
     // Create a SkimMatcherV2 (same algorithm used by skim)
     let matcher = SkimMatcherV2::default();
 
-    // Score each item and collect results
-    let mut scored_items: Vec<(i64, String)> = items.iter()
-        .filter_map(|item| {
-            // Score the item, filter out non-matches
-            matcher.fuzzy_match(item, query)
-                .map(|score| (score, item.clone()))
-        })
-        .collect();
+    let mut scored_indices: Vec<(i64, usize)> = Vec::with_capacity(items.len());
+
+    for (index, item) in items.iter().enumerate() {
+        if let Some(score) = matcher.fuzzy_match(item, query) {
+            scored_indices.push((score, index));
+        }
+    }
 
     // Sort by score (descending)
-    scored_items.sort_by(|a, b| b.0.cmp(&a.0));
+    scored_indices.sort_by(|a, b| b.0.cmp(&a.0));
 
-    // Extract just the strings
-    scored_items.into_iter()
-        .map(|(_, item)| item)
-        .collect()
+    Ok(scored_indices
+        .into_iter()
+        .filter_map(|(_, index)| items.get(index))
+        .collect())
 }
 
 /// Perform a fuzzy search on an iterable of strings
@@ -105,34 +147,68 @@ fn perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String>
 ///
 /// Returns:
 ///     A list of matched items
+///
+/// Raises:
+///     TypeError: If None is found in the items
+///     ValueError: If any non-string item is found in the items
+///     RuntimeError: If there's an error in the underlying fuzzy matching system
 #[pyfunction]
-fn fuzzy_match(py: Python, query: &str, items: PyObject, interactive: Option<bool>) -> PyResult<PyObject> {
-    // Convert items to an iterator
-    let items = items.as_ref(py);
+fn fuzzy_match(
+    py: Python,
+    query: &str,
+    items: &PyAny,
+    interactive: Option<bool>,
+) -> PyResult<PyObject> {
     let iter = items.iter()?;
 
-    // Collect the strings from the iterator
-    let mut item_strs = Vec::new();
+    // Get the length of the iterator if it's a sequence
+    let approx_len = if let Ok(seq) = items.downcast::<PySequence>() {
+        seq.len().unwrap_or(10).min(1000) // Cap at 1000 to avoid excessive allocation
+    } else {
+        10 // Default capacity if we can't determine length
+    };
+
+    let mut item_strs = Vec::with_capacity(approx_len);
+
     for item_result in iter {
         let item = item_result?;
-        let item_str = item.extract::<String>()?;
-        item_strs.push(item_str);
+
+        if item.is_none() {
+            return Err(PyTypeError::new_err(
+                "'NoneType' object cannot be converted to string",
+            ));
+        }
+
+        let str_item = if let Ok(py_str) = item.downcast::<PyString>() {
+            // Fast path for Python strings
+            py_str.to_str()?.to_owned()
+        } else {
+            // Fallback for other types
+            match item.extract::<String>() {
+                Ok(s) => s,
+                Err(_) => {
+                    // Get the type name of the problematic item
+                    let type_name = item.get_type().name().unwrap_or("Unknown");
+                    return Err(PyValueError::new_err(format!(
+                        "'{}' object cannot be converted to string",
+                        type_name
+                    )));
+                }
+            }
+        };
+
+        item_strs.push(str_item);
     }
 
-    // Use our helper function to perform the actual matching
-    // Default to non-interactive mode if not specified
     let is_interactive = interactive.unwrap_or(false);
-    let matched_items = perform_fuzzy_match(query, item_strs, is_interactive);
+    let matched_items = perform_fuzzy_match(query, &item_strs, is_interactive)?;
 
-    // Convert results to Python list
-    let py_results = PyList::empty(py);
-    for item in matched_items {
-        py_results.append(item.into_py(py))?;
-    }
+    let py_results = PyList::new(py, matched_items.iter().map(|&s| s.clone()));
 
     Ok(py_results.into())
 }
 
+/// A Python module implemented in Rust performing (non) interactive fuzzy matching of a string over an iterable of strings.
 #[pymodule]
 fn skym(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fuzzy_match, m)?)?;
@@ -145,16 +221,19 @@ fn skym(_py: Python, m: &PyModule) -> PyResult<()> {
 // These functions are directly exported for benchmarking and testing.
 // ----------------------------------------------------------------------
 
-/// Wrapper function for benchmarking perform_fuzzy_match
-/// This function is exported for benchmarks but not intended for general use
 #[doc(hidden)]
-pub fn bench_perform_fuzzy_match(query: &str, items: Vec<String>, interactive: bool) -> Vec<String> {
+pub fn bench_perform_fuzzy_match<'a>(
+    query: &str,
+    items: &'a [String],
+    interactive: bool,
+) -> PyResult<Vec<&'a String>> {
     perform_fuzzy_match(query, items, interactive)
 }
 
-/// Wrapper function for benchmarking perform_non_interactive_match
-/// This function is exported for benchmarks but not intended for general use
 #[doc(hidden)]
-pub fn bench_perform_non_interactive_match(query: &str, items: Vec<String>) -> Vec<String> {
+pub fn bench_perform_non_interactive_match<'a>(
+    query: &str,
+    items: &'a [String],
+) -> PyResult<Vec<&'a String>> {
     perform_non_interactive_match(query, items)
 }

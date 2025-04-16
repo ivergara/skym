@@ -30,13 +30,15 @@ fn bench_non_interactive(c: &mut Criterion) {
 
     c.bench_function("fuzzy_match_common_query", |b| {
         b.iter(|| {
-            bench_perform_non_interactive_match(black_box("ap"), black_box(small_items.clone()))
+            // Pass reference to items instead of cloning
+            bench_perform_non_interactive_match(black_box("ap"), black_box(&small_items))
         })
     });
 
     c.bench_function("fuzzy_match_rare_query", |b| {
         b.iter(|| {
-            bench_perform_non_interactive_match(black_box("zx"), black_box(small_items.clone()))
+            // Pass reference to items instead of cloning
+            bench_perform_non_interactive_match(black_box("zx"), black_box(&small_items))
         })
     });
 
@@ -51,7 +53,8 @@ fn bench_non_interactive(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("items", size), &items, |b, items| {
             b.iter(|| {
-                bench_perform_non_interactive_match(black_box("item_5"), black_box(items.clone()))
+                // Pass reference to items instead of cloning
+                bench_perform_non_interactive_match(black_box("item_5"), black_box(items))
             })
         });
     }
@@ -72,7 +75,8 @@ fn bench_non_interactive(c: &mut Criterion) {
 
     c.bench_function("fuzzy_match_long_strings", |b| {
         b.iter(|| {
-            bench_perform_non_interactive_match(black_box("item_1"), black_box(long_items.clone()))
+            // Pass reference to items instead of cloning
+            bench_perform_non_interactive_match(black_box("item_1"), black_box(&long_items))
         })
     });
 }

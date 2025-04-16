@@ -2,6 +2,12 @@
 default:
     @just --list
 
+build:
+    uv run maturin develop
+
+test:
+    uv run pytest python/tests/unit.py
+
 # --------------------
 # Benchmarking Recipes
 # --------------------
@@ -10,13 +16,8 @@ default:
 bench:
     cargo bench
 
-# Run benchmarks and save results as a baseline
-bench-save BASELINE="original":
-    cargo bench -- --save-baseline {{BASELINE}}
-
-# Compare current benchmark results with a saved baseline
-bench-compare BASELINE="original":
-    cargo bench -- --baseline {{BASELINE}}
+pybench:
+    uv run pytest python/tests/benchmark.py
 
 # Open benchmark report in the default browser
 bench-report:
