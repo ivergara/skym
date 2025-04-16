@@ -2,6 +2,12 @@
 default:
     @just --list
 
+build:
+    uv run maturin develop
+
+test:
+    uv run pytest python/tests/unit.py
+
 # --------------------
 # Benchmarking Recipes
 # --------------------
@@ -9,6 +15,9 @@ default:
 # Run all benchmarks
 bench:
     cargo bench
+
+pybench:
+    uv run pytest python/tests/benchmark.py
 
 # Open benchmark report in the default browser
 bench-report:
